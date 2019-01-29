@@ -57,7 +57,8 @@ entity fpga64_buslogic is
 		cpuData: in unsigned(7 downto 0);
 		vicAddr: in unsigned(15 downto 0);
 		vicData: in unsigned(7 downto 0);
-		sidData: in unsigned(7 downto 0);
+		sid1Data: in unsigned(7 downto 0);
+		sid2Data: in unsigned(7 downto 0);
 		colorData: in unsigned(3 downto 0);
 		cia1Data: in unsigned(7 downto 0);
 		cia2Data: in unsigned(7 downto 0);
@@ -69,7 +70,8 @@ entity fpga64_buslogic is
 		dataToVic : out unsigned(7 downto 0);
 
 		cs_vic: out std_logic;
-		cs_sid: out std_logic;
+		cs_sid1: out std_logic;
+		cs_sid2: out std_logic;
 		cs_color : out std_logic;
 		cs_cia1: out std_logic;
 		cs_cia2: out std_logic;
@@ -113,7 +115,8 @@ architecture rtl of fpga64_buslogic is
 
 	signal cs_ramReg : std_logic;
 	signal cs_vicReg : std_logic;
-	signal cs_sidReg : std_logic;
+	signal cs_sid1Reg : std_logic;
+	signal cs_sid2Reg : std_logic;
 	signal cs_colorReg : std_logic;
 	signal cs_cia1Reg : std_logic;
 	signal cs_cia2Reg : std_logic;
@@ -188,10 +191,10 @@ begin
 
 	--
 	--begin
-	process(ramData, vicData, sidData, colorData,
+	process(ramData, vicData, sid1Data, sid2Data, colorData,
            cia1Data, cia2Data, charData, romData,
 			  cs_romHReg, cs_romLReg, cs_romReg, cs_CharReg,
-			  cs_ramReg, cs_vicReg, cs_sidReg, cs_colorReg,
+			  cs_ramReg, cs_vicReg, cs_sid1Reg, cs_sid2Reg, cs_colorReg,
 			  cs_cia1Reg, cs_cia2Reg, lastVicData,
 			  cs_ioEReg, cs_ioFReg, ioE_rom, ioF_rom,
 			  ioE_ext, ioF_ext, io_data)
@@ -207,8 +210,10 @@ begin
 			dataToCpu <= ramData;
 		elsif cs_vicReg = '1' then
 			dataToCpu <= vicData;
-		elsif cs_sidReg = '1' then
-			dataToCpu <= sidData;
+		elsif cs_sid1Reg = '1' then
+			dataToCpu <= sid1Data;
+		elsif cs_sid2Reg = '1' then
+			dataToCpu <= sid2Data;
 		elsif cs_colorReg = '1' then
 			dataToCpu(3 downto 0) <= colorData;
 		elsif cs_cia1Reg = '1' then
@@ -243,7 +248,8 @@ begin
 			cs_romReg <= '0';
 			cs_ramReg <= '0';
 			cs_vicReg <= '0';
-			cs_sidReg <= '0';
+			cs_sid1Reg <= '0';
+			cs_sid2Reg <= '0';
 			cs_colorReg <= '0';
 			cs_cia1Reg <= '0';
 			cs_cia2Reg <= '0';
@@ -276,8 +282,17 @@ begin
 						case cpuAddr(11 downto 8) is
 							when X"0" | X"1" | X"2" | X"3" =>
 								cs_vicReg <= '1';
-							when X"4" | X"5" | X"6" | X"7" =>
-								cs_sidReg <= '1';
+							when X"4" =>
+								if cpuAddr(5) = '0' then
+								-- e.g d400
+									cs_sid1Reg <= '1';
+								else
+								-- e.g d420
+									cs_sid2Reg <= '1';
+								end if;
+							when X"5" | X"6" | X"7" =>
+								-- e.g d500
+								cs_sid2Reg <= '1';
 							when X"8" | X"9" | X"A" | X"B" =>
 								cs_colorReg <= '1';
 							when X"C" =>
@@ -349,7 +364,8 @@ begin
 
 	cs_ram <= cs_ramReg or cs_romLReg or cs_romHReg or cs_UMAXromHReg;  -- need to keep ram active for cartridges LCA
 	cs_vic <= cs_vicReg;
-	cs_sid <= cs_sidReg;
+	cs_sid1 <= cs_sid1Reg;
+	cs_sid2 <= cs_sid2Reg;
 	cs_color <= cs_colorReg;
 	cs_cia1 <= cs_cia1Reg;
 	cs_cia2 <= cs_cia2Reg;

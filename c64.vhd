@@ -491,11 +491,15 @@ end component;
 	signal vsync_out : std_logic;
 	signal scanlines : std_logic_vector(1 downto 0);
 
-	signal audio_data : std_logic_vector(17 downto 0);
-	signal sid_out    : signed(15 downto 0);
-	signal opl_out    : signed(15 downto 0);
-	signal audio_out  : signed(15 downto 0);
+	signal audio_data_l : std_logic_vector(17 downto 0);
+	signal audio_data_r : std_logic_vector(17 downto 0);
 
+	signal sid_out_l    : signed(15 downto 0);
+	signal sid_out_r    : signed(15 downto 0);
+	signal audio_out_l  : signed(15 downto 0);
+	signal audio_out_r  : signed(15 downto 0);
+
+	signal opl_out      : signed(15 downto 0);
 	signal opl_dout   : std_logic_vector(7 downto 0);
 	signal opl_en     : std_logic;
 
@@ -838,7 +842,8 @@ begin
 		SIDclk => open,
 		still => open,
 		idle => idle,
-		audio_data => audio_data,
+		audio_data_l => audio_data_l,
+		audio_data_r => audio_data_r,
 		extfilter_en => not status(6),
 		sid_ver => status(13),
 		iec_data_o => c64_iec_data_o,
@@ -965,11 +970,13 @@ begin
 		 sample_l => opl_out
 	);
 
-	sid_out <= signed(audio_data(17 downto 2));
-	audio_out <= sid_out when opl_en = '0' else shift_right(opl_out,1) + shift_right(sid_out,1);
+	sid_out_l <= signed(audio_data_l(17 downto 2));
+	sid_out_r <= signed(audio_data_r(17 downto 2));
+	audio_out_l <= sid_out_l when opl_en = '0' else shift_right(opl_out,1) + shift_right(sid_out_l,1);
+	audio_out_r <= sid_out_r when opl_en = '0' else shift_right(opl_out,1) + shift_right(sid_out_r,1);
 
-	AUDIO_L    <= std_logic_vector(audio_out);
-	AUDIO_R    <= std_logic_vector(audio_out);
+	AUDIO_L    <= std_logic_vector(audio_out_l);
+	AUDIO_R    <= std_logic_vector(audio_out_r);
 	AUDIO_S    <= '1';
 	AUDIO_MIX  <= "00";
 

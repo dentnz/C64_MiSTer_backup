@@ -95,10 +95,11 @@ entity fpga64_sid_iec is
 		serioclk    : out std_logic;
 		ces         : out std_logic_vector(3 downto 0);
 
-		--Connector to the SID
+		--Connector to the SID(s)
 		SIDclk      : out std_logic;
 		still       : out unsigned(15 downto 0);
-		audio_data  : out std_logic_vector(17 downto 0);
+		audio_data_l: out std_logic_vector(17 downto 0);
+		audio_data_r: out std_logic_vector(17 downto 0);
 		extfilter_en: in  std_logic;
 		sid_ver     : in  std_logic;
 
@@ -164,7 +165,8 @@ architecture rtl of fpga64_sid_iec is
 	signal ramDataReg : unsigned(7 downto 0);
 
 	signal cs_vic: std_logic;
-	signal cs_sid: std_logic;
+	signal cs_sid1: std_logic;
+	signal cs_sid2: std_logic;
 	signal cs_color: std_logic;
 	signal cs_cia1: std_logic;
 	signal cs_cia2: std_logic;
@@ -181,7 +183,8 @@ architecture rtl of fpga64_sid_iec is
 	signal bankSwitch: unsigned(2 downto 0);
 
 	-- SID signals
-	signal sid_do : std_logic_vector(7 downto 0);
+	signal sid1_do : std_logic_vector(7 downto 0);
+	signal sid2_do : std_logic_vector(7 downto 0);
 	signal sid_do6581 : std_logic_vector(7 downto 0);
 	signal sid_do8580 : std_logic_vector(7 downto 0);
 
@@ -454,7 +457,8 @@ begin
 		cpuData => cpuDo,
 		vicAddr => vicAddr,
 		vicData => vicData,
-		sidData => unsigned(sid_do),
+		sid1Data => unsigned(sid1_do),
+		sid2Data => unsigned(sid2_do),
 		colorData => colorData,
 		cia1Data => cia1Do,
 		cia2Data => cia2Do,
@@ -466,7 +470,8 @@ begin
 		dataToVic => vicDi,
 
 		cs_vic => cs_vic,
-		cs_sid => cs_sid,
+		cs_sid1 => cs_sid1,
+		cs_sid2 => cs_sid2,
 		cs_color => cs_color,
 		cs_cia1 => cs_cia1,
 		cs_cia2 => cs_cia2,
@@ -581,8 +586,13 @@ begin
 		end if;
 	end process;
 	
-	audio_data <= std_logic_vector(voice_volume) when sid_ver='0' else (audio_8580 & "00");
-	sid_do     <= sid_do6581                     when sid_ver='0' else sid_do8580;
+	--audio_data <= std_logic_vector(voice_volume) when sid_ver='0' else (audio_8580 & "00");
+	--sid_do     <= sid_do6581                     when sid_ver='0' else sid_do8580;
+	audio_data_l <= std_logic_vector(voice_volume);
+	audio_data_r <= audio_8580 & "00";
+
+	sid1_do     <= sid_do6581;
+	sid2_do     <= sid_do8580;
 
 	pot_x <= X"FF" when ((cia1_pao(7) and JoyA(5)) or (cia1_pao(6) and JoyB(5))) = '0' else X"00";
 	pot_y <= X"FF" when ((cia1_pao(7) and JoyA(6)) or (cia1_pao(6) and JoyB(6))) = '0' else X"00";
@@ -593,7 +603,7 @@ begin
 		reset => reset,
 
 		addr => "000" & cpuAddr(4 downto 0),
-		wren => pulseWrRam and phi0_cpu and cs_sid,
+		wren => pulseWrRam and phi0_cpu and cs_sid1,
 		wdata => std_logic_vector(cpuDo),
 		rdata => sid_do6581,
 
@@ -615,7 +625,7 @@ begin
 		reset => reset,
 		clk => clk32,
 		ce_1m => clk_1MHz(31),
-		we => pulseWrRam and phi0_cpu and cs_sid,
+		we => pulseWrRam and phi0_cpu and cs_sid2,
 		addr => std_logic_vector(cpuAddr(4 downto 0)),
 		data_in => std_logic_vector(cpuDo),
 		data_out => sid_do8580,
@@ -765,7 +775,7 @@ begin
 	end process;
 
 --serialBus and SID
-	serialBus: process(clk32, sysCycle, cs_sid, cs_ioE, cs_ioF, cs_romL, cs_romH, cpuWe)
+	serialBus: process(clk32, sysCycle, cs_sid1, cs_sid2, cs_ioE, cs_ioF, cs_romL, cs_romH, cpuWe)
 	begin
 		ces <= "1111";
 		if sysCycle = CYCLE_IEC0
@@ -774,8 +784,8 @@ begin
 		or sysCycle = CYCLE_IEC3 then
 			ces <= "1011";--iec port
 		end if;
-		if cs_sid = '1' then
-			ces <= "0011"; --SID 1
+		if cs_sid1 = '1' or cs_sid2 = '1' then
+			ces <= "0011"; --SID 1 or 2
 		end if;
 		if cs_romL = '1' then
 			ces <= "0000";
