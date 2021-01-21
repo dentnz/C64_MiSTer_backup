@@ -31,125 +31,6 @@
 // altera message_off 10240
 
 module spdif
-
-//-----------------------------------------------------------------
-// Params
-//-----------------------------------------------------------------
-#(
-    parameter CLK_RATE              = 50000000,
-    parameter AUDIO_RATE            = 48000,
-
-    // Generated params
-    parameter WHOLE_CYCLES          = (CLK_RATE) / (AUDIO_RATE*128),
-    parameter ERROR_BASE            = 10000,
-    parameter [63:0] ERRORS_PER_BIT = ((CLK_RATE * ERROR_BASE) / (AUDIO_RATE*128)) - (WHOLE_CYCLES * ERROR_BASE)
-)
-
-//-----------------------------------------------------------------
-// Ports
-//-----------------------------------------------------------------
-(
-    input        clk_i,
-    input        rst_i,
-    input        half_rate,
-
-    // Output
-    output       spdif_o,
-
-    // Audio interface (16-bit x 2 = RL)
-    input [15:0] audio_r,
-    input [15:0] audio_l,
-    output       sample_req_o
-);
-
-reg lpf_ce;
-always @(posedge clk_i) begin
-	reg [2:0] div;
-
-	if(bit_clk_q) div <= div + 1'd1;
-	lpf_ce <= !div;
-end
-
-wire [15:0] al, ar;
-
-lpf_spdif lpf_l
-(
-   .CLK(clk_i),
-   .CE(lpf_ce),
-   .IDATA(audio_l),
-   .ODATA(al)
-);
-
-lpf_spdif lpf_r
-(
-   .CLK(clk_i),
-   .CE(lpf_ce),
-
-   .IDATA(audio_r),
-   .ODATA(ar)
-);
-
-reg         bit_clk_q;
-
-// Clock pulse generator
-always @ (posedge rst_i or posedge clk_i) begin
-	reg [31:0]  count_q;
-	reg [31:0]  error_q;
-	reg ce;
-
-	if (rst_i) begin
-		count_q   <= 0;
-		error_q   <= 0;
-		bit_clk_q <= 1;
-		ce        <= 0;
-	end
-	else
-	begin
-		if(count_q == WHOLE_CYCLES-1) begin
-			if (error_q < (ERROR_BASE - ERRORS_PER_BIT)) begin
-				error_q <= error_q + ERRORS_PER_BIT[31:0];
-				count_q <= 0;
-			end else begin
-				error_q <= error_q + ERRORS_PER_BIT[31:0] - ERROR_BASE;
-				count_q <= count_q + 1;
-			end
-		end else if(count_q == WHOLE_CYCLES) begin
-			count_q <= 0;
-		end else begin
-			count_q <= count_q + 1;
-		end
-
-		bit_clk_q <= 0;
-		if(!count_q) begin
-			ce <= ~ce;
-			if(~half_rate || ce) bit_clk_q <= 1;
-		end
-	end
-end
-
-//-----------------------------------------------------------------
-// Core SPDIF
-//-----------------------------------------------------------------
-
-wire [31:0] sample_i = {ar, al};
-
-spdif_core
-u_core
-(
-    .clk_i(clk_i),
-    .rst_i(rst_i),
-
-    .bit_out_en_i(bit_clk_q),
-
-    .spdif_o(spdif_o),
-
-    .sample_i(sample_i),
-    .sample_req_o(sample_req_o)
-);
-
-endmodule
-
-module spdif_core
 (
     input           clk_i,
     input           rst_i,
@@ -185,6 +66,8 @@ reg         bit_toggle_q;
 reg         spdif_out_q;
 
 reg [5:0]   parity_count_q;
+
+reg         channel_status_bit;
 
 //-----------------------------------------------------------------
 // Subframe Counter
@@ -261,7 +144,7 @@ assign subframe_w[28] = 1'b0; // Valid
 assign subframe_w[29] = 1'b0;
 
 // Timeslots 30 = Channel status bit
-assign subframe_w[30] = 1'b0;
+assign subframe_w[30] = channel_status_bit ; //was constant 1'b0 enabling copy-bit;
 
 // Timeslots 31 = Even Parity bit (31:4)
 assign subframe_w[31] = 1'b0;
@@ -269,9 +152,9 @@ assign subframe_w[31] = 1'b0;
 //-----------------------------------------------------------------
 // Preamble
 //-----------------------------------------------------------------
-localparam PREAMBLE_Z = 8'b00010111;
-localparam PREAMBLE_Y = 8'b00100111;
-localparam PREAMBLE_X = 8'b01000111;
+localparam PREAMBLE_Z = 8'b00010111; // "B" channel A data at start of block
+localparam PREAMBLE_Y = 8'b00100111; // "W" channel B data
+localparam PREAMBLE_X = 8'b01000111; // "M" channel A data not at start of block
 
 reg [7:0] preamble_r;
 
@@ -287,6 +170,15 @@ begin
     // Left Channel (but not start of block)?
     else
         preamble_r = PREAMBLE_X; // X(M)
+
+    if (subframe_count_q[8:1] == 8'd2) // frame 2 => subframes 4 and 5 => 0 = copy inhibited, 1 = copy permitted
+        channel_status_bit = 1'b1;
+    else if (subframe_count_q[8:1] == 8'd15) // frame 15 => 0 = no indication, 1 = original media
+        channel_status_bit = 1'b1;
+    else if (subframe_count_q[8:1] == 8'd25) // frame 24 to 27 => sample frequency, 0100 = 48kHz, 0000 = 44kHz (l2r)
+        channel_status_bit = 1'b1;
+    else
+        channel_status_bit = 1'b0; // everything else defaults to 0        
 end
 
 always @ (posedge rst_i or posedge clk_i )
@@ -415,31 +307,5 @@ else
     spdif_out_q <= bit_r;
 
 assign spdif_o  = spdif_out_q;
-
-endmodule
-
-module lpf_spdif
-(
-   input         CLK,
-   input         CE,
-   input  [15:0] IDATA,
-   output reg [15:0] ODATA
-);
-
-reg [511:0] acc;
-reg [20:0] sum;
-
-always @(*) begin
-	integer i;
-	sum = 0;
-	for (i = 0; i < 32; i = i+1) sum = sum + {{5{acc[(i*16)+15]}}, acc[i*16 +:16]};
-end
-
-always @(posedge CLK) begin
-	if(CE) begin
-		acc <= {acc[495:0], IDATA};
-		ODATA <= sum[20:5];
-	end
-end
 
 endmodule
