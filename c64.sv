@@ -382,6 +382,8 @@ wire reset_crt;
 wire [24:0] cart_addr;
 wire load_cart = (ioctl_index == 5) || (ioctl_index == 'hC0);
 
+wire reu_attached;
+
 cartridge cartridge
 (
 	.romL(romL),
@@ -423,7 +425,10 @@ cartridge cartridge
 	.freeze_key(freeze_key),
 	.mod_key(mod_key),
 	.nmi(nmi),
-	.nmi_ack(nmi_ack)
+	.nmi_ack(nmi_ack),
+
+	//.dma(dma),
+    .reu_attached(reu_attached)
 );
 
 // rearrange joystick contacts for c64
@@ -452,14 +457,14 @@ wire [1:0] pd34_mode = status[29:28];
 reg [24:0] ioctl_load_addr;
 reg        ioctl_req_wr;
 
-reg [15:0] cart_id;
+reg        cart_attached = 0;
+reg [15:0] cart_id = 0;
 reg [15:0] cart_bank_laddr;
 reg [15:0] cart_bank_size;
 reg [15:0] cart_bank_num;
 reg  [7:0] cart_bank_type;
 reg  [7:0] cart_exrom;
 reg  [7:0] cart_game;
-reg        cart_attached = 0;
 reg  [3:0] cart_hdr_cnt;
 reg        cart_hdr_wr;
 reg [31:0] cart_blk_len;
@@ -495,8 +500,14 @@ always @(posedge clk_sys) begin
 	io_cycleD <= io_cycle;
 	cart_hdr_wr <= 0;
 	old_meminit <= inj_meminit;
-	
-	if (~io_cycle & io_cycleD) begin
+
+	if (io_cycle & ~io_cycleD & reu_attached & ~reu_rw) begin
+	    // rising edge of io_cycle
+	    io_cycle_ce <= 1;
+        io_cycle_we <= 1;
+        io_cycle_addr <= reu_addr;
+        io_cycle_data <= reu_data;
+    end else if (~io_cycle & io_cycleD) begin
 		io_cycle_ce <= 1;
 		io_cycle_we <= 0;
 		io_cycle_addr <= tap_play_addr + TAP_ADDR;
@@ -723,6 +734,20 @@ wire [17:0] audio_l;
 wire  [7:0] r,g,b;
 
 wire        ntsc = status[2];
+wire        rom_loading = ((ioctl_index == 0) && !ioctl_addr[14] && ioctl_download && ioctl_wr);
+wire  [7:0] reu_data; // inout
+// Bit 4 of the status register
+reg         reu_size = 1'b1;
+wire        reu_rw;
+
+wire        phi2_p;
+wire        phi2_n;
+wire        ba;
+wire        aec;
+wire        cpu_hasbus;
+wire        cpu_we;
+wire  [7:0] cpu_do;
+wire        dma_n;
 
 fpga64_sid_iec fpga64
 (
@@ -747,7 +772,7 @@ fpga64_sid_iec fpga64
 	.iof_rom(IOF_rom),
 	.max_ram(max_ram),
 	.umaxromh(UMAXromH),
-	.cpu_hasbus(),
+	.cpu_hasbus(cpu_hasbus),
 	.irq_n(1),
 	.nmi_n(~nmi),
 	.nmi_ack(nmi_ack),
@@ -758,9 +783,10 @@ fpga64_sid_iec fpga64
 	.romh(romH),
 	.ioe(IOE),
 	.iof(IOF),
-	.iof_ext(opl_en),
+	.iof_ext(opl_en | reu_attached),
 	.ioe_ext(1'b0),
-	.io_data(sid2_oe ? (status[16] ? data_8580 : data_6581) : opl_dout),
+	.io_data(reu_attached ? reu_cpu_data_out : sid2_oe ? (status[16] ? data_8580 : data_6581) : opl_dout),
+	.reu_attached(reu_attached),
 
 	.joya(joyA_c64 | {1'b0, pd12_mode[1] & paddle_2_btn, pd12_mode[1] & paddle_1_btn, 2'b00} | {pd12_mode[0] & mouse_btn[0], 3'b000, pd12_mode[0] & mouse_btn[1]}),
 	.joyb(joyB_c64 | {1'b0, pd34_mode[1] & paddle_4_btn, pd34_mode[1] & paddle_3_btn, 2'b00} | {pd34_mode[0] & mouse_btn[0], 3'b000, pd34_mode[0] & mouse_btn[1]}),
@@ -792,6 +818,13 @@ fpga64_sid_iec fpga64
 	.cass_sense(~tap_play),
 	.cass_in(cass_do),
 
+	.phi2_p(phi2_p),
+	.phi2_n(phi2_n),
+	.ba(ba),
+	.aec_out(aec),
+	.cpu_we(cpu_we),
+	.cpu_do(cpu_do),
+
 	.uart_enable(status[1]),
 	.uart_txd(UART_TXD),
 	.uart_rts(!UART_RTS), // Trying inverting these, as I think they are breaking minicom and other terminal programs on the HPS? ElectronAsh.
@@ -815,7 +848,7 @@ c1351 mouse
 	.reset(~reset_n),
 
 	.ps2_mouse(ps2_mouse),
-	
+
 	.potX(mouse_x),
 	.potY(mouse_y),
 	.button(mouse_btn)
@@ -921,7 +954,7 @@ reg ce_c1541;
 always @(negedge clk64) begin
 	int sum = 0;
 	int msum;
-	
+
 	msum <= ntsc ? 65454537 : 63055911;
 
 	ce_c1541 <= 0;
@@ -931,7 +964,6 @@ always @(negedge clk64) begin
 		ce_c1541 <= 1;
 	end
 end
-
 
 wire hsync;
 wire vsync;
@@ -1078,7 +1110,7 @@ sid8580 sid_8580
 
 	.extfilter_en(~status[6]),
 	.audio_data(audio8580_r)
-);	
+);
 
 wire [17:0] audio_r = status[16] ? audio8580_r : audio6581_r;
 
@@ -1166,6 +1198,40 @@ c1530 c1530
 
 	.play(cass_run),
 	.dout(cass_do)
+);
+
+wire [7:0] reu_cpu_data_out;
+(* noprune *) reg [7:0] reu_debug;
+always @(posedge clk_sys) begin
+    if (phi2_p || phi2_n) begin
+        if (phi2 == 0) phi2 <= 1;
+        else phi2 <= 0;
+    end
+end
+
+rec reu
+(
+    .phi2(phi2),
+    .dotclk(clk_sys),
+    .rst(reset_n),
+
+    .dma(),
+	.ba(ba),
+
+    .cpu_addr(c64_addr),
+    .cpu_data(cpu_do),
+    .cpu_data_out(reu_cpu_data_out),
+    .cpu_addr_out(reu_cpu_addr_out),
+    .cpu_rw(cpu_hasbus),
+    .cpu_we(cpu_we),
+    .IOF(IOF),
+    .size(reu_size),
+
+	.reu_addr(reu_addr),
+    .reu_data(reu_data),
+
+    .aec(aec),
+    .reu_debug(reu_debug)
 );
 
 endmodule

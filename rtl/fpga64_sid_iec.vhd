@@ -73,8 +73,8 @@ port(
 	nmi_ack     : out std_logic;
 	dma_n       : in  std_logic;
 	ba          : out std_logic;
-	romL			: out std_logic;	-- cart signals LCA
-	romH			: out std_logic;	-- cart signals LCA
+	romL        : out std_logic;	-- cart signals LCA
+	romH        : out std_logic;	-- cart signals LCA
 	UMAXromH 	: out std_logic;	-- cart signals LCA
 	IOE			: out std_logic;	-- cart signals LCA
 	IOF			: out std_logic;	-- cart signals LCA
@@ -85,6 +85,7 @@ port(
 	ioF_ext     : in  std_logic;
 	ioE_ext     : in  std_logic;
 	io_data     : in  unsigned(7 downto 0);
+	reu_attached: in  std_logic;
 
 	-- joystick interface
 	joyA        : in  std_logic_vector(6 downto 0);
@@ -118,6 +119,13 @@ port(
 	cass_write  : out std_logic;
 	cass_sense  : in  std_logic;
 	cass_in     : in  std_logic;
+
+    phi2_p      : out std_logic;
+    phi2_n      : out std_logic;
+    aec_out     : out std_logic;
+    cpu_we      : out std_logic;
+    -- Allows us to get CPU data out and into the REU if attached
+    cpu_do      : out std_logic_vector(7 downto 0);
 
 	uart_enable : in  std_logic;
 
@@ -188,6 +196,7 @@ signal cpuWe        : std_logic;
 signal cpuAddr      : unsigned(15 downto 0);
 signal cpuDi        : unsigned(7 downto 0);
 signal cpuDo        : unsigned(7 downto 0);
+
 signal cpuIO        : unsigned(7 downto 0);
 
 signal reset        : std_logic := '1';
@@ -301,6 +310,11 @@ idle <= '1' when
 	(sysCycle = CYCLE_IDLE4) or (sysCycle = CYCLE_IDLE5) or
 	(sysCycle = CYCLE_IDLE6) or (sysCycle = CYCLE_IDLE7) else '0';
 
+phi2_p <= enableCia_p;
+phi2_n <= enableCia_n;
+
+cpu_we <= cpuWe;
+
 -- -----------------------------------------------------------------------
 -- System state machine, controls bus accesses
 -- and triggers enables of other components
@@ -392,6 +406,8 @@ begin
 	end if;
 end process;
 
+aec_out <= aec;
+
 -- -----------------------------------------------------------------------
 -- PLA and bus-switches
 -- -----------------------------------------------------------------------
@@ -433,6 +449,7 @@ port map (
 	systemAddr => systemAddr,
 	dataToCpu => cpuDi,
 	dataToVic => vicDi,
+	reu_attached => reu_attached,
 
 	cs_vic => cs_vic,
 	cs_sid => cs_sid,
@@ -479,6 +496,8 @@ begin
 	end if;
 end process;
 
+cpu_do <= std_logic_vector(cpuDo);
+
 -- In the first three cycles after BA went low, the VIC reads
 -- $ff as character pointers and
 -- as color information the lower 4 bits of the opcode after the access to $d011.
@@ -497,6 +516,7 @@ port map (
 	reset => reset,
 	enaPixel => enablePixel,
 	enaData => enableVic,
+	-- CPU clock from the VIC
 	phi => phi0_cpu,
 	
 	baSync => '0',

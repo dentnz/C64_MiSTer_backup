@@ -63,6 +63,7 @@ entity fpga64_buslogic is
 		cia1Data: in unsigned(7 downto 0);
 		cia2Data: in unsigned(7 downto 0);
 		lastVicData : in unsigned(7 downto 0);
+        reu_attached: in std_logic;
 
 		systemWe: out std_logic;
 		systemAddr: out unsigned(15 downto 0);
@@ -126,7 +127,6 @@ architecture rtl of fpga64_buslogic is
 	signal ultimax : std_logic;
 
 	signal currentAddr: unsigned(15 downto 0);
-	
 begin
 	chargen: entity work.dprom
 	generic map ("rtl/roms/chargen.mif", 12)
@@ -191,6 +191,7 @@ begin
 	--begin
 	process(ramData, vicData, sidData, colorData,
            cia1Data, cia2Data, charData, romData,
+              reu_attached,
 			  cs_romHReg, cs_romLReg, cs_romReg, cs_CharReg,
 			  cs_ramReg, cs_vicReg, cs_sidReg, cs_colorReg,
 			  cs_cia1Reg, cs_cia2Reg, lastVicData,
@@ -228,6 +229,8 @@ begin
 			dataToCpu <= io_data;
 		elsif cs_ioFReg = '1' and ioF_ext = '1' then
 			dataToCpu <= io_data;
+--        elsif reu_attached = '1' and ioF_ext = '1' then
+--            dataToCpu <= io_data;
 		end if;
 	end process;
 
@@ -273,7 +276,15 @@ begin
 					if (ultimax = '0' or max_ram = '1') and bankSwitch(1) = '0' and bankSwitch(0) = '0' then
 						-- 64Kbyte RAM layout
 						cs_ramReg <= '1';
-					elsif ultimax = '1' or bankSwitch(2) = '1' then
+						cs_ioFReg <= '0';
+						case cpuAddr(11 downto 8) is
+							when X"F" =>
+                                cs_ioFReg <= '1';
+                                cs_ramReg <= '0';
+                            when others =>
+                                null;
+                        end case;
+					elsif ultimax = '1' or bankSwitch(2) = '1' or reu_attached = '1' then
 						case cpuAddr(11 downto 8) is
 							when X"0" | X"1" | X"2" | X"3" =>
 								cs_vicReg <= '1';

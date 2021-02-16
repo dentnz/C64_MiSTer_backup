@@ -15,8 +15,8 @@ module cartridge
 	input         mem_ce,
 	output        mem_ce_out,
 
-	input         clk32,				 		// 32mhz clock source
-	input         reset,						// reset signal
+	input         clk32,				 	// 32mhz clock source
+	input         reset,					// reset signal
 	output reg    reset_out,				// reset signal
 
 	input  [15:0] cart_id,					// cart ID or cart type
@@ -24,29 +24,31 @@ module cartridge
 	input   [7:0] cart_game,				// CRT file GAME status
 
 	input  [15:0] cart_bank_laddr,		// bank loading address
-	input  [15:0] cart_bank_size,			// length of each bank
+	input  [15:0] cart_bank_size,		// length of each bank
 	input  [15:0] cart_bank_num,
 	input   [7:0] cart_bank_type,
 	input  [24:0] cart_bank_raddr,		// chip packet address
 	input         cart_bank_wr,
 
-	input         cart_attached,			// FLAG to say cart has been loaded
+	input         cart_attached,		// FLAG to say cart has been loaded
 	input         cart_loading,
 
 	input  [15:0] c64_mem_address_in,	// address from cpu
 	input   [7:0] c64_data_out,			// data from cpu going to sdram
 
 	output [24:0] sdram_address_out, 	// translated address output
-	output        exrom,						// exrom line
-	output        game,						// game line
-	output reg    IOE_ena,					// FLAG to enable IOE address relocation
-	output reg    IOF_ena,					// FLAG to enable IOF address relocation
+	output        exrom,				// exrom line
+	output        game,					// game line
+	output reg    IOE_ena,				// FLAG to enable IOE address relocation
+	output reg    IOF_ena,				// FLAG to enable IOF address relocation
 	output reg    max_ram,              // Enable whole C64 RAM in Ultimax mode
 
 	input         freeze_key,
 	input         mod_key,
 	output reg    nmi,
-	input         nmi_ack
+	input         nmi_ack,
+
+    output reg    reu_attached
 );
 
 reg [24:0] addr_out;
@@ -103,7 +105,9 @@ wire ioe_wr = stb_ioe & mem_write;
 wire ioe_rd = stb_ioe & ~mem_write;
 
 wire iof_wr = stb_iof & mem_write;
-//wire iof_rd = stb_iof & ~mem_write;
+wire iof_rd = stb_iof & ~mem_write;
+
+wire ioef = stb_ioe | stb_iof;
 
 reg  old_freeze = 0;
 wire freeze_req = (~old_freeze & freeze_key);
@@ -150,6 +154,7 @@ always @(posedge clk32) begin
 		exrom_overide <= 1;
 		game_overide <= 1;
 		max_ram <= 0;
+		reu_attached <= 0;
 	end
 	else
 	case(cart_id)
@@ -312,21 +317,15 @@ always @(posedge clk32) begin
 		// any access to romL or $DE00 charges a capacitor
 		// Once discharged the exrom drops to ON disabling cart
 		10: begin
-				if(!init_n) count_ena <= 0;
-				if(IOE || romL) count_ena <= 1;
-
-				if(!init_n || IOE || romL) begin
+                reu_attached <= 1;
+                game_overide  <= 1;
+                exrom_overide <= 0;
+				if(~init_n) begin
 					init_n <= 1;
 					game_overide  <= 1;
 					exrom_overide <= 0;
-					count <= 16384;
-					IOF_ena <= 1;
+					IOF_ena <= 0;
 					IOF_bank<= 0;
-				end
-				else
-				if(count_ena) begin
-					if(count) count <= count - 1'd1;
-					else exrom_overide <= 1;
 				end
 			end
 
@@ -506,6 +505,27 @@ always @(posedge clk32) begin
 				end
 			end
 
+        // @TODO Beginings of REU
+        // Generic 8k(exrom=0,game=1), 16k(exrom=0,game=0), ULTIMAX(exrom=1,game=0)
+        41: begin
+            if(!init_n) count_ena <= 0;
+            if(IOE || romL) count_ena <= 1;
+
+            if(!init_n || IOE || romL) begin
+                init_n <= 1;
+                game_overide  <= 1;
+                exrom_overide <= 0;
+                count <= 16384;
+                IOF_ena <= 1;
+                IOF_bank<= 0;
+            end
+            else
+            if(count_ena) begin
+                if(count) count <= count - 1'd1;
+                else exrom_overide <= 1;
+            end
+        end
+
 		// Kingsoft Business Basic
 		54: begin
 				max_ram <= 1;
@@ -560,16 +580,16 @@ assign mem_ce_out = mem_ce | ioe_ce | iof_ce;
 always @(*) begin
 	addr_out = c64_mem_address_in;
 	if(cart_attached) begin
-		if(romH & (romH_we | ~mem_write)) addr_out[24:13] = romH_we ? {1'b1, bank_hi[2:0]} : {1'b1, bank_hi};
-		if(romL & (romL_we | ~mem_write)) begin
-			addr_out[24:13] = romL_we ? {1'b1, bank_lo[2:0]} : {1'b1, bank_lo};
-			addr_out[12:0]  = c64_mem_address_in[12:0] & mask_lo;
-		end
+        if(romH & (romH_we | ~mem_write)) addr_out[24:13] = romH_we ? {1'b1, bank_hi[2:0]} : {1'b1, bank_hi};
+        if(romL & (romL_we | ~mem_write)) begin
+            addr_out[24:13] = romL_we ? {1'b1, bank_lo[2:0]} : {1'b1, bank_lo};
+            addr_out[12:0]  = c64_mem_address_in[12:0] & mask_lo;
+        end
 
-		if(ioe_ce) addr_out[24:13] = IOE_wr_ena ? {1'b1, IOE_bank[2:0]} : {1'b1, IOE_bank}; // read/write to DExx
-		if(iof_ce) addr_out[24:13] = IOF_wr_ena ? {1'b1, IOF_bank[2:0]} : {1'b1, IOF_bank}; // read/write to DFxx
+        if(ioe_ce) addr_out[24:13] = IOE_wr_ena ? {1'b1, IOE_bank[2:0]} : {1'b1, IOE_bank}; // read/write to DExx
+        if(iof_ce) addr_out[24:13] = IOF_wr_ena ? {1'b1, IOF_bank[2:0]} : {1'b1, IOF_bank}; // read/write to DFxx
 
-		if(UMAXromH && !mem_write) addr_out[24:12] = {1'b1, bank_hi, 1'b1}; // ULTIMAX CharROM
+        if(UMAXromH && !mem_write) addr_out[24:12] = {1'b1, bank_hi, 1'b1}; // ULTIMAX CharROM
 	end
 end
 
