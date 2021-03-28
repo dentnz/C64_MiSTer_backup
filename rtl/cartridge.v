@@ -319,15 +319,30 @@ always @(posedge clk32) begin
 		10: begin
                 reu_attached <= 1;
                 game_overide  <= 1;
+                //exrom_overide <= 1;
                 exrom_overide <= 0;
 				if(~init_n) begin
 					init_n <= 1;
 					game_overide  <= 1;
+					//exrom_overide <= 1;
 					exrom_overide <= 0;
 					IOF_ena <= 0;
 					IOF_bank<= 0;
 				end
 			end
+        // REU
+        11: begin
+                reu_attached <= 1;
+                game_overide  <= 1;
+                exrom_overide <= 1;
+                if(~init_n) begin
+                    init_n <= 1;
+                    game_overide  <= 1;
+                    exrom_overide <= 1;
+                    IOF_ena <= 0;
+                    IOF_bank<= 0;
+                end
+            end
 
 		// FINAL CARTRIDGE 1,2
 		// 16k rom - IOE turns off rom / IOF turns rom on

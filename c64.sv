@@ -427,8 +427,7 @@ cartridge cartridge
 	.nmi(nmi),
 	.nmi_ack(nmi_ack),
 
-	//.dma(dma),
-    .reu_attached(reu_attached)
+	.reu_attached(reu_attached)
 );
 
 // rearrange joystick contacts for c64
@@ -501,13 +500,9 @@ always @(posedge clk_sys) begin
 	cart_hdr_wr <= 0;
 	old_meminit <= inj_meminit;
 
-	if (io_cycle & ~io_cycleD & reu_attached & ~reu_rw) begin
-	    // rising edge of io_cycle
-	    io_cycle_ce <= 1;
-        io_cycle_we <= 1;
-        io_cycle_addr <= reu_addr;
-        io_cycle_data <= reu_data;
-    end else if (~io_cycle & io_cycleD) begin
+    //end else
+    if (~io_cycle & io_cycleD) begin
+        // falling edge of io_cycle
 		io_cycle_ce <= 1;
 		io_cycle_we <= 0;
 		io_cycle_addr <= tap_play_addr + TAP_ADDR;
@@ -522,6 +517,7 @@ always @(posedge clk_sys) begin
 		end
 	end
 
+    // Pulse the io_cycle
 	if (io_cycle & io_cycleD) {io_cycle_ce, io_cycle_we} <= 0;
 
 	if (ioctl_wr) begin
@@ -707,10 +703,12 @@ sdram sdram
 	.clk(clk64),
 	.init(~pll_locked),
 	.refresh(idle),
-	.addr( io_cycle ? io_cycle_addr : cart_addr    ),
-	.ce  ( io_cycle ? io_cycle_ce   : mem_ce       ),
-	.we  ( io_cycle ? io_cycle_we   : ~ram_we      ),
-	.din ( io_cycle ? io_cycle_data : c64_data_out ),
+
+	.addr( io_cycle ? io_cycle_addr : reu_attached && ba == 1 && (dma_n == 0 || reu_sdram_request == 1) ? reu_sdram_address : cart_addr ),
+    .ce  ( io_cycle ? io_cycle_ce   : reu_attached && ba == 1 && (dma_n == 0 || reu_sdram_request == 1) ? 1'b1 : mem_ce ),
+    .we  ( io_cycle ? io_cycle_we   : reu_attached && ba == 1 && (dma_n == 0 || reu_sdram_request == 1) ? ~reu_sdram_rw : ~ram_we ),
+    .din ( io_cycle ? io_cycle_data : reu_attached && ba == 1 && (dma_n == 0 || reu_sdram_request == 1) ? reu_sdram_data : c64_data_out ),
+
 	.dout( sdram_data )
 );
 
@@ -739,15 +737,15 @@ wire  [7:0] reu_data; // inout
 // Bit 4 of the status register
 reg         reu_size = 1'b1;
 wire        reu_rw;
-
+wire        sd_cs = SDRAM_nCAS;
 wire        phi2_p;
 wire        phi2_n;
+wire        phi2;
 wire        ba;
 wire        aec;
 wire        cpu_hasbus;
 wire        cpu_we;
 wire  [7:0] cpu_do;
-wire        dma_n;
 
 fpga64_sid_iec fpga64
 (
@@ -755,9 +753,11 @@ fpga64_sid_iec fpga64
 	.reset_n(reset_n),
 	.bios(status[15:14]),
 	.ps2_key(key),
+	// CPU address out and data out
 	.ramaddr(c64_addr),
 	.ramdataout(c64_data_out),
-	.ramdatain(sdram_data),
+    .ramdatain(sdram_data),
+
 	.ramce(ram_ce),
 	.ramwe(ram_we),
 	.ntscmode(ntsc),
@@ -778,14 +778,14 @@ fpga64_sid_iec fpga64
 	.nmi_ack(nmi_ack),
 	.freeze_key(freeze_key),
 	.mod_key(mod_key),
-	.dma_n(1'b1),
+	.dma_n(!(ba == 1 && dma_n == 0)),
 	.roml(romL),
 	.romh(romH),
 	.ioe(IOE),
 	.iof(IOF),
 	.iof_ext(opl_en | reu_attached),
 	.ioe_ext(1'b0),
-	.io_data(reu_attached ? reu_cpu_data_out : sid2_oe ? (status[16] ? data_8580 : data_6581) : opl_dout),
+	.io_data(reu_attached ? reu_reg_data_out : sid2_oe ? (status[16] ? data_8580 : data_6581) : opl_dout),
 	.reu_attached(reu_attached),
 
 	.joya(joyA_c64 | {1'b0, pd12_mode[1] & paddle_2_btn, pd12_mode[1] & paddle_1_btn, 2'b00} | {pd12_mode[0] & mouse_btn[0], 3'b000, pd12_mode[0] & mouse_btn[1]}),
@@ -820,6 +820,7 @@ fpga64_sid_iec fpga64
 
 	.phi2_p(phi2_p),
 	.phi2_n(phi2_n),
+	.phi2(phi2),
 	.ba(ba),
 	.aec_out(aec),
 	.cpu_we(cpu_we),
@@ -1200,38 +1201,229 @@ c1530 c1530
 	.dout(cass_do)
 );
 
+//------------- REU -------------------
+reg         dma_n = 1;
+wire        reu_pause;
+wire        phi2_tick;
+wire        inhibit;
+wire        vic_cycle;
+slot_timing slot_timing
+(
+    .clock(clk64),
+    .reset(~reset_n),
+    .PHI2(phi2),
+    .ba(ba),
+    .phi2_tick(phi2_tick),
+    .serve_vic(1'b1),
+    .serve_inhibit(1'b1),
+    .vic_cycle(vic_cycle),
+    .inhibit(inhibit)
+);
+
 wire [7:0] reu_cpu_data_out;
 (* noprune *) reg [7:0] reu_debug;
-always @(posedge clk_sys) begin
-    if (phi2_p || phi2_n) begin
-        if (phi2 == 0) phi2 <= 1;
-        else phi2 <= 0;
+wire [7:0]  reu_reg_data_out;
+
+reg         reu_mem_req_request;
+wire [24:0] reu_mem_req_address;
+wire [7:0]  reu_mem_req_data;
+reg         reu_mem_req_rw = 1;
+wire [7:0]  reu_mem_req_ram_tag;
+wire [7:0]  reu_mem_resp_data_in;
+wire [7:0]  reu_mem_resp_rack_tag;
+wire [7:0]  reu_mem_resp_dack_tag;
+
+reg         reu_dma_req_request = 0;
+wire [15:0] reu_dma_req_address;
+wire [7:0]  reu_dma_req_data;
+reg         reu_dma_req_rw = 1;
+wire [7:0]  reu_dma_req_ram_tag;
+wire [7:0]  reu_dma_resp_data_in;
+// Note that reu dma does not use a rack/dack tag
+reg         reu_dma_resp_rack = 0;
+reg         reu_dma_resp_dack = 0;
+reg         reu_write_ff00 = 1;
+
+reu reu
+(
+    // System input/config
+    .clock(clk64),
+    .reset(~reset_n),
+    .phi2_tick(~phi2_tick),
+    .enable(reu_attached),
+    .reu_dma_n(dma_n),
+    .ba(ba),
+    .cpu_we(cpu_we),
+    .write_ff00(reu_write_ff00),
+    .inhibit(inhibit || ba == 0),
+
+    // Register stuff
+    .slot_req_data(cpu_do),
+    .slot_req_io_address(c64_addr),
+    .slot_req_bus_address(c64_addr),
+    .slot_req_io_read(IOF && ~cpu_we),
+    .slot_req_io_write(IOF && cpu_we),
+    .slot_resp_data(reu_reg_data_out),
+
+    // Memory messaging
+    // Requests being made from the reu to read *reu* memory
+    .mem_req_request(reu_mem_req_request),
+    .mem_req_address(reu_mem_req_address),
+    .mem_req_tag(reu_mem_req_ram_tag),
+    .mem_req_read_writen(reu_mem_req_rw),
+    .mem_req_data(reu_mem_req_data),
+    .mem_resp_data(reu_mem_resp_data_in),
+    .mem_resp_rack_tag(reu_mem_resp_rack_tag),
+    .mem_resp_dack_tag(reu_mem_resp_dack_tag),
+
+    // DMA request (requests to c64-based sdram)
+    .dma_req_request(reu_dma_req_request),
+    .dma_req_address(reu_dma_req_address),
+    .dma_req_read_writen(reu_dma_req_rw),
+    .dma_req_data(reu_dma_req_data),
+    .dma_resp_data(reu_dma_resp_data_in),
+    .dma_resp_rack(reu_dma_resp_rack),
+    .dma_resp_dack(reu_dma_resp_dack)
+);
+
+// Signifies that the reu wants to get something from sdram
+reg         reu_sdram_request = 0;
+// The address the reu is making a request to
+reg  [24:0] reu_sdram_address = 0;
+reg         reu_sdram_rw = 1;
+reg  [7:0]  reu_sdram_state = 1'd1;
+reg  [7:0]  reu_sdram_data;
+reg  [7:0]  reu_delay = 8'd0;
+
+always @(posedge clk64) begin
+    reg sd_cs_s = 0;
+    reg cpu_we_s = 0;
+    reg falling_edge = 0;
+
+    if (~reset_n) begin
+        reu_mem_resp_rack_tag <= 0;
+        reu_mem_resp_dack_tag <= 0;
+        reu_dma_resp_rack <= 0;
+        reu_dma_resp_dack <= 0;
+        reu_sdram_rw <= 1;
+        reu_sdram_request <= 0;
+        reu_sdram_state = 1'd1;
+        reu_delay <= 0;
+        reu_write_ff00 <= 1;
+    end
+
+    sd_cs_s <= sd_cs;
+    cpu_we_s <= cpu_we;
+
+    if (c64_addr == 16'hff00 && cpu_we == 1 && cpu_we_s == 0) begin
+        // Signal there was a write to ff00
+        reu_write_ff00 <= 1;
+    end else if (c64_addr == 16'hff00 && cpu_we == 0 && cpu_we_s == 1) begin
+        reu_write_ff00 <= 0;
+    end
+
+    if (ba == 1) begin
+        case(reu_sdram_state)
+            // IDLE
+            1: begin
+                reu_dma_resp_rack <= 0;
+                reu_dma_resp_dack <= 0;
+                reu_mem_resp_rack_tag <= 0;
+                reu_mem_resp_dack_tag <= 0;
+                reu_sdram_rw <= 1;
+                reu_sdram_request <= 0;
+                reu_delay <= 0;
+                // Wait for sdram requests from the REU
+                if (reu_mem_req_request == 1) begin
+                    // REU read or write
+                    reu_sdram_address <= { 2'h3, reu_mem_req_address[22:0] };
+                    reu_sdram_rw <= reu_mem_req_rw;
+                          reu_sdram_request <= 1;
+                    if (reu_mem_req_rw == 0) begin
+                        reu_sdram_data <= reu_mem_req_data;
+                    end
+                    // Do a reu rack, then maybe dack if this is a read
+                    reu_sdram_state <= 8'd2;
+                end else if (reu_dma_req_request == 1) begin
+                    // C64 read or write
+                        reu_sdram_request <= 1;
+                    reu_sdram_address <= reu_dma_req_address;
+                    reu_sdram_rw <= reu_dma_req_rw;
+                    if (reu_dma_req_rw == 0) begin
+                        reu_sdram_data <= reu_dma_req_data;
+                    end
+                    // Do a DMA/c64 rack, then maybe dack if this is a read
+                    reu_sdram_state <= 8'd3;
+                end
+            end
+
+            // RACK
+            2: begin
+                if (sd_cs_s == 0 && sd_cs == 1) begin
+                    reu_delay <= reu_delay + 1;
+                    if (reu_delay >= 8'd2 && phi2_tick != 1) begin
+                        reu_delay <= 0;
+                        reu_sdram_state <= 8'd4;
+                    end
+                end
+            end
+            3: begin
+                if (sd_cs_s == 0 && sd_cs == 1) begin
+                    reu_delay <= reu_delay + 1;
+                    if (reu_delay >= 8'd2 && phi2_tick != 1) begin
+                        reu_delay <= 0;
+                        reu_sdram_state <= 8'd5;
+                    end
+                end
+            end
+
+            // Wait for falling write - CPU is about to read
+            4: begin
+                if (cpu_we == 0) begin
+                    reu_mem_resp_rack_tag <= reu_mem_req_ram_tag;
+                    if (reu_sdram_rw == 0) begin
+                        // writing
+                        reu_sdram_request <= 0;
+                        reu_sdram_state <= 8'd1;
+                    end else begin
+                        reu_mem_resp_data_in <= sdram_data;
+                        reu_sdram_state <= 8'd6;
+                    end
+                end
+            end
+            5: begin
+                if (cpu_we == 0) begin
+                    reu_dma_resp_rack <= 1;
+                    if (reu_sdram_rw == 0) begin
+                        // writing
+                        reu_sdram_state <= 8'd1;
+                        reu_sdram_request <= 0;
+                    end else begin
+                        reu_dma_resp_data_in <= sdram_data;
+                        reu_sdram_state <= 8'd7;
+                    end
+                end
+            end
+
+            // DACK
+            6: begin
+                if (reu_mem_req_request == 0) begin
+                    reu_mem_resp_rack_tag <= 0;
+                    reu_mem_resp_dack_tag <= reu_mem_req_ram_tag;
+                    reu_sdram_request <= 0;
+                    reu_sdram_state <= 8'd1;
+                end
+            end
+            7: begin
+                if (reu_dma_req_request == 0) begin
+                    reu_dma_resp_rack <= 0;
+                    reu_dma_resp_dack <= 1;
+                    reu_sdram_request <= 0;
+                    reu_sdram_state <= 8'd1;
+                end
+            end
+        endcase
     end
 end
-
-rec reu
-(
-    .phi2(phi2),
-    .dotclk(clk_sys),
-    .rst(reset_n),
-
-    .dma(),
-	.ba(ba),
-
-    .cpu_addr(c64_addr),
-    .cpu_data(cpu_do),
-    .cpu_data_out(reu_cpu_data_out),
-    .cpu_addr_out(reu_cpu_addr_out),
-    .cpu_rw(cpu_hasbus),
-    .cpu_we(cpu_we),
-    .IOF(IOF),
-    .size(reu_size),
-
-	.reu_addr(reu_addr),
-    .reu_data(reu_data),
-
-    .aec(aec),
-    .reu_debug(reu_debug)
-);
 
 endmodule

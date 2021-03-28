@@ -47,7 +47,6 @@ port(
 	ramAddr     : out unsigned(15 downto 0);
 	ramDataIn   : in  unsigned(7 downto 0);
 	ramDataOut  : out unsigned(7 downto 0);
-
 	ramCE       : out std_logic;
 	ramWe       : out std_logic;
 
@@ -122,6 +121,7 @@ port(
 
     phi2_p      : out std_logic;
     phi2_n      : out std_logic;
+    phi2        : out std_logic;
     aec_out     : out std_logic;
     cpu_we      : out std_logic;
     -- Allows us to get CPU data out and into the REU if attached
@@ -354,16 +354,21 @@ begin
 		enableCia_n <= '0';
 		enableCia_p <= '0';
 		enableCpu <= '0';
-
+        phi2 <= '0';
 		case sysCycle is
 		when CYCLE_VIC2 =>
 			enableVic <= '1';
-		when CYCLE_CPUE =>
-			enableVic <= '1';
-			enableCpu <= '1';
 		when CYCLE_CPUC =>
+		    phi2 <= '1';
 			enableCia_n <= '1';
+        when CYCLE_CPUD =>
+            phi2 <= '1';
+        when CYCLE_CPUE =>
+            enableVic <= '1';
+            enableCpu <= '1';
+            phi2 <= '1';
 		when CYCLE_CPUF =>
+		    phi2 <= '1';
 			enableCia_p <= '1';
 		when others =>
 			null;
@@ -449,7 +454,9 @@ port map (
 	systemAddr => systemAddr,
 	dataToCpu => cpuDi,
 	dataToVic => vicDi,
+
 	reu_attached => reu_attached,
+	dma_n => dma_n,
 
 	cs_vic => cs_vic,
 	cs_sid => cs_sid,
@@ -723,7 +730,8 @@ port map (
 	nmi_n => nmiLoc,
 	nmi_ack => nmi_ack,
 	irq_n => irqLoc,
-	rdy => baLoc,
+	-- dma can pause the cpu now
+	rdy => dma_n and baLoc,
 
 	di => cpuDi,
 	addr => cpuAddr,
@@ -771,7 +779,8 @@ begin
 				reset_cnt <= reset_cnt + 1;
 			end if;
 		end if;
-		if reset_n = '0' or dma_n = '0' then -- temp reset fix
+		-- if reset_n = '0' or dma_n = '0' then -- temp reset fix
+		if reset_n = '0' then -- temp reset fix
 			reset_cnt <= 0;
 		end if;
 	end if;
@@ -792,8 +801,7 @@ ramCE <= '0' when sysCycle /= CYCLE_IDLE0 and sysCycle /= CYCLE_IDLE1 and sysCyc
 process(clk32)
 begin
 	if rising_edge(clk32) then
-		if sysCycle = CYCLE_CPUD
-		or sysCycle = CYCLE_VIC2 then
+		if sysCycle = CYCLE_CPUD or sysCycle = CYCLE_VIC2 then
 			ramDataReg <= unsigned(ramDataIn);
 		end if;
 		if sysCycle = CYCLE_VIC3 then

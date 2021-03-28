@@ -11,6 +11,7 @@ set_global_assignment -name VHDL_FILE rtl/spram.vhd
 set_global_assignment -name VERILOG_FILE rtl/cartridge.v
 set_global_assignment -name VHDL_FILE rtl/c1530.vhd
 set_global_assignment -name VHDL_FILE rtl/reu.vhd
+set_global_assignment -name VHDL_FILE rtl/slot_timing.vhd
 set_global_assignment -name VERILOG_FILE rtl/c1351.v
 set_global_assignment -name VHDL_FILE rtl/video_sync.vhd
 set_global_assignment -name VHDL_FILE rtl/video_vicII_656x.vhd
