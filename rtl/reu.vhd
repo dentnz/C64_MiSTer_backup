@@ -172,6 +172,8 @@ architecture gideon of reu is
 
 	signal cpu_we_s         : std_logic;
 	signal cpu_read_delay   : std_logic_vector(1 downto 0) := "00";
+	signal ba_s				: std_logic;
+	signal phi2_tick_s      : std_logic;
 begin
     with size_ctrl select mask <=
         "00000001" when "000",
@@ -241,7 +243,7 @@ begin
                 --end if;
             end if;
             command.ff00 <= '1'; -- reset to default state
-            state <= idle;
+			state <= phi2GoingHigh;
         end procedure;
 
         procedure dispatch is
@@ -261,6 +263,8 @@ begin
     begin
         if rising_edge(clock) then
 			cpu_we_s <= cpu_we;
+			ba_s <= ba;
+			phi2_tick_s <= phi2_tick;
             r := "000" & slot_req_io_address(4 downto 0);
 			
             if io_write='1' then  --$DF00-$DF1F, decoded below in a concurrent statement
@@ -341,15 +345,15 @@ begin
 
             when delay =>
 				-- Wait for a phi2 tick to go by while the bus is available
-                if phi2_tick='0' and ba='1' then
-					state <= phi2GoingHigh;
+                if phi2_tick_s='0' and phi2_tick='1' and ba='1' and ba_s='1' and cpu_we='0' then
+					--state <= phi2GoingHigh;
+					reu_dma_n <= '0';
+					dispatch;
 				end if;
 
             when phi2GoingHigh =>
-				-- Wait for the next phi2 tick
-				if phi2_tick='1' and ba='1' then
-					state <= waitForCPUR;
-					cpu_read_delay <= "00";
+				if phi2_tick_s='0' and phi2_tick='1' and ba='1' then
+					state <= idle;
                 end if;
 				
 			when waitForCPUR =>

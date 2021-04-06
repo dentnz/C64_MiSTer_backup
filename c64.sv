@@ -1249,7 +1249,7 @@ reu reu
     // System input/config
     .clock(clk64),
     .reset(~reset_n),
-    .phi2_tick(~phi2_tick),
+    .phi2_tick(~phi2),
     .enable(reu_attached),
     .reu_dma_n(dma_n),
     .ba(ba),
@@ -1298,7 +1298,8 @@ reg  [7:0]  reu_delay = 8'd0;
 always @(posedge clk64) begin
     reg sd_cs_s = 0;
     reg cpu_we_s = 0;
-    reg falling_edge = 0;
+    reg idle_s = 0;
+    reg phi2_s = 0;
 
     if (~reset_n) begin
         reu_mem_resp_rack_tag <= 0;
@@ -1308,12 +1309,16 @@ always @(posedge clk64) begin
         reu_sdram_rw <= 1;
         reu_sdram_request <= 0;
         reu_sdram_state = 1'd1;
-        reu_delay <= 0;
         reu_write_ff00 <= 1;
+        idle_s <= 0;
+        phi2_s <= 0;
+        cpu_we_s <= 0;
     end
 
     sd_cs_s <= sd_cs;
     cpu_we_s <= cpu_we;
+    idle_s <= idle;
+    phi2_s <= phi2;
 
     if (c64_addr == 16'hff00 && cpu_we == 1 && cpu_we_s == 0) begin
         // Signal there was a write to ff00
@@ -1334,19 +1339,19 @@ always @(posedge clk64) begin
                 reu_sdram_request <= 0;
                 reu_delay <= 0;
                 // Wait for sdram requests from the REU
-                if (reu_mem_req_request == 1) begin
+                if (idle == 1 && idle_s == 0 && reu_mem_req_request == 1) begin
                     // REU read or write
+                    reu_sdram_request <= 1;
                     reu_sdram_address <= { 2'h3, reu_mem_req_address[22:0] };
                     reu_sdram_rw <= reu_mem_req_rw;
-                          reu_sdram_request <= 1;
                     if (reu_mem_req_rw == 0) begin
                         reu_sdram_data <= reu_mem_req_data;
                     end
                     // Do a reu rack, then maybe dack if this is a read
                     reu_sdram_state <= 8'd2;
-                end else if (reu_dma_req_request == 1) begin
+                end else if (idle == 1 && idle_s == 0 && reu_dma_req_request == 1) begin
                     // C64 read or write
-                        reu_sdram_request <= 1;
+                    reu_sdram_request <= 1;
                     reu_sdram_address <= reu_dma_req_address;
                     reu_sdram_rw <= reu_dma_req_rw;
                     if (reu_dma_req_rw == 0) begin
@@ -1359,27 +1364,19 @@ always @(posedge clk64) begin
 
             // RACK
             2: begin
-                if (sd_cs_s == 0 && sd_cs == 1) begin
-                    reu_delay <= reu_delay + 1;
-                    if (reu_delay >= 8'd2 && phi2_tick != 1) begin
-                        reu_delay <= 0;
-                        reu_sdram_state <= 8'd4;
-                    end
+                // Wait for next SDRAM refresh
+                if (idle == 1 && idle_s == 0) begin
+                    reu_sdram_state <= 8'd4;
                 end
             end
             3: begin
-                if (sd_cs_s == 0 && sd_cs == 1) begin
-                    reu_delay <= reu_delay + 1;
-                    if (reu_delay >= 8'd2 && phi2_tick != 1) begin
-                        reu_delay <= 0;
-                        reu_sdram_state <= 8'd5;
-                    end
+                if (idle == 1 && idle_s == 0) begin
+                    reu_sdram_state <= 8'd5;
                 end
             end
 
-            // Wait for falling write - CPU is about to read
             4: begin
-                if (cpu_we == 0) begin
+                if (idle == 0 && idle_s == 1) begin
                     reu_mem_resp_rack_tag <= reu_mem_req_ram_tag;
                     if (reu_sdram_rw == 0) begin
                         // writing
@@ -1392,7 +1389,7 @@ always @(posedge clk64) begin
                 end
             end
             5: begin
-                if (cpu_we == 0) begin
+                if (idle == 0 && idle_s == 1) begin
                     reu_dma_resp_rack <= 1;
                     if (reu_sdram_rw == 0) begin
                         // writing
@@ -1407,7 +1404,7 @@ always @(posedge clk64) begin
 
             // DACK
             6: begin
-                if (reu_mem_req_request == 0) begin
+                if (idle == 0 && reu_mem_req_request == 0) begin
                     reu_mem_resp_rack_tag <= 0;
                     reu_mem_resp_dack_tag <= reu_mem_req_ram_tag;
                     reu_sdram_request <= 0;
@@ -1415,7 +1412,7 @@ always @(posedge clk64) begin
                 end
             end
             7: begin
-                if (reu_dma_req_request == 0) begin
+                if (idle == 0 && reu_dma_req_request == 0) begin
                     reu_dma_resp_rack <= 0;
                     reu_dma_resp_dack <= 1;
                     reu_sdram_request <= 0;
