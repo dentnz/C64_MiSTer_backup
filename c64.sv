@@ -1300,6 +1300,9 @@ always @(posedge clk64) begin
     reg cpu_we_s = 0;
     reg idle_s = 0;
     reg phi2_s = 0;
+    reg ba_s = 0;
+    reg transfer_interrupted = 0;
+    reg [7:0] sdram_data_backup;
 
     if (~reset_n) begin
         reu_mem_resp_rack_tag <= 0;
@@ -1313,18 +1316,30 @@ always @(posedge clk64) begin
         idle_s <= 0;
         phi2_s <= 0;
         cpu_we_s <= 0;
+        ba_s <= 0;
+        transfer_interrupted <= 0;
     end
 
+    // Falling edge detection
     sd_cs_s <= sd_cs;
     cpu_we_s <= cpu_we;
     idle_s <= idle;
     phi2_s <= phi2;
+    ba_s <= ba;
 
+    // FF00 decoding
     if (c64_addr == 16'hff00 && cpu_we == 1 && cpu_we_s == 0) begin
         // Signal there was a write to ff00
         reu_write_ff00 <= 1;
     end else if (c64_addr == 16'hff00 && cpu_we == 0 && cpu_we_s == 1) begin
         reu_write_ff00 <= 0;
+    end
+
+    // Handle transfer interruptions by the VIC
+    if (transfer_interrupted == 0 && reu_sdram_request == 1 && ba == 0 && ba_s == 1) begin
+        // Middle of a request, and the VIC wants the bus back. Keep track of the SDRAM output
+        transfer_interrupted <= 1;
+        sdram_data_backup <= sdram_data;
     end
 
     if (ba == 1) begin
@@ -1338,7 +1353,7 @@ always @(posedge clk64) begin
                 reu_sdram_rw <= 1;
                 reu_sdram_request <= 0;
                 reu_delay <= 0;
-                // Wait for sdram requests from the REU
+                // Wait for sdram requests from the REU and get ready to (R)ACK based on SDRAM refresh
                 if (idle == 1 && idle_s == 0 && reu_mem_req_request == 1) begin
                     // REU read or write
                     reu_sdram_request <= 1;
@@ -1362,7 +1377,6 @@ always @(posedge clk64) begin
                 end
             end
 
-            // RACK
             2: begin
                 // Wait for next SDRAM refresh
                 if (idle == 1 && idle_s == 0) begin
@@ -1375,15 +1389,25 @@ always @(posedge clk64) begin
                 end
             end
 
+            // RACK
             4: begin
                 if (idle == 0 && idle_s == 1) begin
                     reu_mem_resp_rack_tag <= reu_mem_req_ram_tag;
                     if (reu_sdram_rw == 0) begin
                         // writing
+                        if (transfer_interrupted == 1) begin
+                            transfer_interrupted <= 0;
+                        end
                         reu_sdram_request <= 0;
                         reu_sdram_state <= 8'd1;
                     end else begin
-                        reu_mem_resp_data_in <= sdram_data;
+                        // Restore our sdram backup in the case that the reu transfer was interrupted
+                        if (transfer_interrupted == 1) begin
+                            transfer_interrupted <= 0;
+                            reu_mem_resp_data_in <= sdram_data_backup;
+                        end else begin
+                            reu_mem_resp_data_in <= sdram_data;
+                        end
                         reu_sdram_state <= 8'd6;
                     end
                 end
@@ -1393,10 +1417,18 @@ always @(posedge clk64) begin
                     reu_dma_resp_rack <= 1;
                     if (reu_sdram_rw == 0) begin
                         // writing
+                        if (transfer_interrupted == 1) begin
+                            transfer_interrupted <= 0;
+                        end
                         reu_sdram_state <= 8'd1;
                         reu_sdram_request <= 0;
                     end else begin
-                        reu_dma_resp_data_in <= sdram_data;
+                        if (transfer_interrupted == 1) begin
+                            transfer_interrupted <= 0;
+                            reu_dma_resp_data_in <= sdram_data_backup;
+                        end else begin
+                            reu_dma_resp_data_in <= sdram_data;
+                        end
                         reu_sdram_state <= 8'd7;
                     end
                 end
@@ -1404,6 +1436,7 @@ always @(posedge clk64) begin
 
             // DACK
             6: begin
+                // The response from the REU may fall in between a SDRAM refresh
                 if (idle == 0 && reu_mem_req_request == 0) begin
                     reu_mem_resp_rack_tag <= 0;
                     reu_mem_resp_dack_tag <= reu_mem_req_ram_tag;
@@ -1412,6 +1445,7 @@ always @(posedge clk64) begin
                 end
             end
             7: begin
+                // The response from the REU may fall in between a SDRAM refresh
                 if (idle == 0 && reu_dma_req_request == 0) begin
                     reu_dma_resp_rack <= 0;
                     reu_dma_resp_dack <= 1;

@@ -243,6 +243,7 @@ begin
                 --end if;
             end if;
             command.ff00 <= '1'; -- reset to default state
+			-- We need to wait for phi2 before closing off
 			state <= phi2GoingHigh;
         end procedure;
 
@@ -392,6 +393,8 @@ begin
             when do_write_c64 =>
                 if c64_rack='1' then
 					c64_req <= '0';
+					-- @todo will this fix it?
+					glob_rwn <= '1';
                     next_address;
                     state <= check_end;
                 end if;
