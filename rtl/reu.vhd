@@ -10,7 +10,7 @@ port (
 
     g_ram_tag           : std_logic_vector(7 downto 0) := X"10";
     g_extended          : boolean := false;
-    g_ram_base          : unsigned(27 downto 0) := X"1000000"; -- second (=upper 16M)
+    g_ram_base          : unsigned(27 downto 0) := X"0000000"; -- second (=upper 16M)
 
     -- register interface
     -- Signals are expanded out, as we are integrating with c64.sv
@@ -32,7 +32,7 @@ port (
     -- system interface
     phi2_tick           : in  std_logic := '0';
     reu_dma_n           : out std_logic := '1';
-    size_ctrl           : in  std_logic_vector(2 downto 0) := "001";
+    size_ctrl           : in  std_logic_vector(2 downto 0) := "111";
     enable              : in  std_logic;
     inhibit             : in  std_logic := '0'; -- to pause a transfer, because OSD menu is active
     ba                  : in  std_logic;
@@ -94,9 +94,8 @@ architecture gideon of reu is
 
     signal c64_addr   : unsigned(15 downto 0) := (others => '0');
     signal reu_addr   : unsigned(23 downto 0) := (others => '0');
-    --signal count      : unsigned(23 downto 0) := (others => '1');
-    signal count      : unsigned(15 downto 0) := (others => '1');
-
+    signal count      : unsigned(23 downto 0) := (others => '1');
+    
     signal c64_req    : std_logic := '0';
     signal c64_rack   : std_logic := '0';
     signal c64_dack   : std_logic := '0';
@@ -188,7 +187,7 @@ begin
     --masked_reu_addr(23 downto 19) <= (reu_base(23 downto 19) and mask(7 downto 3)) when not g_extended else
     --                                 (reu_addr(23 downto 19) and mask(7 downto 3));
 									 
-	masked_reu_addr(23 downto 19) <= (reu_addr(23 downto 19) and mask(7 downto 3));
+	masked_reu_addr(23 downto 19) <= (reu_base(23 downto 19) and mask(7 downto 3));
 									 
     masked_reu_addr(18 downto 16) <= (reu_addr(18 downto 16) and mask(2 downto 0));
     masked_reu_addr(15 downto  0) <= reu_addr(15 downto 0);
@@ -234,12 +233,12 @@ begin
         begin
             if command.autoload='1' then
                 c64_addr <= c64_base;
-                --reu_addr <= reu_base(reu_addr'range);
-				reu_addr <= reu_base(23 downto 0);
+                reu_addr <= reu_base(reu_addr'range);
+				--reu_addr <= reu_base(23 downto 0);
                 --if g_extended then
-                count <= length_reg(15 downto 0);
+                --count <= length_reg(15 downto 0);
                 --else
-                --count(15 downto 0) <= length_reg(15 downto 0);
+                count(15 downto 0) <= length_reg(15 downto 0);
                 --end if;
             end if;
             command.ff00 <= '1'; -- reset to default state
@@ -309,19 +308,19 @@ begin
             end if;
 
             -- extended registers
-            if io_write='1' then  --$DF00-$DF1F, decoded below in a concurrent statement
-                case r is
-                when c_start_delay =>
-                    start_delay <= io_wdatau;
-                when c_rate_div    =>
-                    rate_div    <= io_wdatau;
-                when c_translen_x =>
-                    --length_reg(23 downto 16) <= io_wdatau;
+            --if io_write='1' then  --$DF00-$DF1F, decoded below in a concurrent statement
+            --    case r is
+            --    when c_start_delay =>
+            --        start_delay <= io_wdatau;
+            --    when c_rate_div    =>
+            --        rate_div    <= io_wdatau;
+            --    when c_translen_x =>
+            --        --length_reg(23 downto 16) <= io_wdatau;
                     --count(23 downto 16) <= io_wdatau;
-                when others =>
-                    null;
-                end case;
-            end if;
+            --    when others =>
+            --        null;
+            --    end case;
+            --end if;
 
             -- clear on read flags
             if io_read='1' then
@@ -393,9 +392,7 @@ begin
             when do_write_c64 =>
                 if c64_rack='1' then
 					c64_req <= '0';
-					-- @todo will this fix it?
-					glob_rwn <= '1';
-                    next_address;
+					next_address;
                     state <= check_end;
                 end if;
 
@@ -520,9 +517,9 @@ begin
         when c_reubase_m  => io_rdata <= std_logic_vector(reu_addr(15 downto 8));
         when c_reubase_h  =>
 --            if g_extended then
-                io_rdata <= std_logic_vector(reu_addr(23 downto 16));
+--                io_rdata <= std_logic_vector(reu_addr(23 downto 16));
 --            else
---                io_rdata <= "11111" & std_logic_vector(reu_addr(18 downto 16)); -- maximum 19 bits
+                io_rdata <= "11111" & std_logic_vector(reu_addr(18 downto 16)); -- maximum 19 bits
 --            end if;
         when c_translen_l => io_rdata <= std_logic_vector(count(7 downto 0));
         when c_translen_h => io_rdata <= std_logic_vector(count(15 downto 8));

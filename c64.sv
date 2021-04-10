@@ -704,10 +704,10 @@ sdram sdram
 	.init(~pll_locked),
 	.refresh(idle),
 
-	.addr( io_cycle ? io_cycle_addr : reu_attached && ba == 1 && (dma_n == 0 || reu_sdram_request == 1) ? reu_sdram_address : cart_addr ),
+	.addr( io_cycle && reu_sdram_rw && dma_n == 1 ? io_cycle_addr : reu_attached && ba == 1 && (dma_n == 0 || reu_sdram_request == 1) ? reu_sdram_address : cart_addr ),
     .ce  ( io_cycle ? io_cycle_ce   : reu_attached && ba == 1 && (dma_n == 0 || reu_sdram_request == 1) ? 1'b1 : mem_ce ),
-    .we  ( io_cycle ? io_cycle_we   : reu_attached && ba == 1 && (dma_n == 0 || reu_sdram_request == 1) ? ~reu_sdram_rw : ~ram_we ),
-    .din ( io_cycle ? io_cycle_data : reu_attached && ba == 1 && (dma_n == 0 || reu_sdram_request == 1) ? reu_sdram_data : c64_data_out ),
+    .we  ( io_cycle && reu_sdram_rw && dma_n == 1 ? io_cycle_we   : reu_attached && ba == 1 && (dma_n == 0 || reu_sdram_request == 1) ? ~reu_sdram_rw : ~ram_we ),
+    .din ( io_cycle && reu_sdram_rw && dma_n == 1 ? io_cycle_data : reu_attached && ba == 1 && (dma_n == 0 || reu_sdram_request == 1) ? reu_sdram_data : c64_data_out ),
 
 	.dout( sdram_data )
 );
@@ -1294,6 +1294,7 @@ reg         reu_sdram_rw = 1;
 reg  [7:0]  reu_sdram_state = 1'd1;
 reg  [7:0]  reu_sdram_data;
 reg  [7:0]  reu_delay = 8'd0;
+localparam REU_ADDR = 25'h300000;
 
 always @(posedge clk64) begin
     reg sd_cs_s = 0;
@@ -1302,7 +1303,10 @@ always @(posedge clk64) begin
     reg phi2_s = 0;
     reg ba_s = 0;
     reg transfer_interrupted = 0;
-    reg [7:0] sdram_data_backup;
+    reg request_type = 0;
+    reg [7:0] sdram_data_backup_c64;
+    reg [7:0] sdram_data_backup_reu;
+
 
     if (~reset_n) begin
         reu_mem_resp_rack_tag <= 0;
@@ -1318,6 +1322,8 @@ always @(posedge clk64) begin
         cpu_we_s <= 0;
         ba_s <= 0;
         transfer_interrupted <= 0;
+        sdram_data_backup_c64 <= 0;
+        sdram_data_backup_reu <= 0;
     end
 
     // Falling edge detection
@@ -1339,7 +1345,11 @@ always @(posedge clk64) begin
     if (transfer_interrupted == 0 && reu_sdram_request == 1 && ba == 0 && ba_s == 1) begin
         // Middle of a request, and the VIC wants the bus back. Keep track of the SDRAM output
         transfer_interrupted <= 1;
-        sdram_data_backup <= sdram_data;
+        if (request_type == 0) begin
+            sdram_data_backup_reu <= sdram_data;
+        end else begin
+            sdram_data_backup_c64 <= sdram_data;
+        end
     end
 
     if (ba == 1) begin
@@ -1352,12 +1362,14 @@ always @(posedge clk64) begin
                 reu_mem_resp_dack_tag <= 0;
                 reu_sdram_rw <= 1;
                 reu_sdram_request <= 0;
+                request_type <= 0;
                 reu_delay <= 0;
                 // Wait for sdram requests from the REU and get ready to (R)ACK based on SDRAM refresh
                 if (idle == 1 && idle_s == 0 && reu_mem_req_request == 1) begin
                     // REU read or write
                     reu_sdram_request <= 1;
-                    reu_sdram_address <= { 2'h3, reu_mem_req_address[22:0] };
+                    request_type <= 0;
+                    reu_sdram_address <= REU_ADDR + reu_mem_req_address;
                     reu_sdram_rw <= reu_mem_req_rw;
                     if (reu_mem_req_rw == 0) begin
                         reu_sdram_data <= reu_mem_req_data;
@@ -1367,6 +1379,7 @@ always @(posedge clk64) begin
                 end else if (idle == 1 && idle_s == 0 && reu_dma_req_request == 1) begin
                     // C64 read or write
                     reu_sdram_request <= 1;
+                    request_type <= 1;
                     reu_sdram_address <= reu_dma_req_address;
                     reu_sdram_rw <= reu_dma_req_rw;
                     if (reu_dma_req_rw == 0) begin
@@ -1404,7 +1417,7 @@ always @(posedge clk64) begin
                         // Restore our sdram backup in the case that the reu transfer was interrupted
                         if (transfer_interrupted == 1) begin
                             transfer_interrupted <= 0;
-                            reu_mem_resp_data_in <= sdram_data_backup;
+                            reu_mem_resp_data_in <= sdram_data_backup_reu;
                         end else begin
                             reu_mem_resp_data_in <= sdram_data;
                         end
@@ -1425,7 +1438,7 @@ always @(posedge clk64) begin
                     end else begin
                         if (transfer_interrupted == 1) begin
                             transfer_interrupted <= 0;
-                            reu_dma_resp_data_in <= sdram_data_backup;
+                            reu_dma_resp_data_in <= sdram_data_backup_c64;
                         end else begin
                             reu_dma_resp_data_in <= sdram_data;
                         end
